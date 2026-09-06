@@ -3,8 +3,7 @@
 Run with Blender's Python interpreter, for example:
     blender --background --python tools/blender/generate_assets.py
 
-The generator intentionally uses only Blender's built-in Python API so the
-first asset pass has no external Python dependency.
+The script works both from Blender's Scripting workspace and from the command line.
 """
 
 from __future__ import annotations
@@ -12,13 +11,47 @@ from __future__ import annotations
 import math
 import os
 import random
-import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def find_project_root() -> Path:
+    """Find the Hollowlight repository regardless of how Blender launched us."""
+    override = os.environ.get("HOLLOWLIGHT_ROOT")
+    if override:
+        root = Path(override).expanduser().resolve()
+        if (root / "tools" / "blender").is_dir():
+            return root
+
+    script_file = globals().get("__file__")
+    if script_file:
+        path = Path(script_file)
+        if path.is_absolute():
+            path = path.resolve()
+            for parent in path.parents:
+                if (parent / "tools" / "blender").is_dir():
+                    return parent
+
+    for text in bpy.data.texts:
+        if text.filepath:
+            path = Path(bpy.path.abspath(text.filepath)).resolve()
+            for parent in path.parents:
+                if (parent / "tools" / "blender").is_dir():
+                    return parent
+
+    for start in (Path.cwd().resolve(),):
+        for parent in (start, *start.parents):
+            if (parent / "tools" / "blender").is_dir():
+                return parent
+
+    raise RuntimeError(
+        "Could not locate the Hollowlight project. Open this script from "
+        "the repository or set HOLLOWLIGHT_ROOT to the repository folder."
+    )
+
+
+ROOT = find_project_root()
 OUTPUT = ROOT / "assets" / "generated"
 MESH_DIR = OUTPUT / "meshes"
 MATERIAL_DIR = OUTPUT / "materials"
@@ -28,7 +61,13 @@ MANIFEST_DIR = OUTPUT / "manifests"
 def clear_scene() -> None:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for datablocks in (bpy.data.meshes, bpy.data.curves, bpy.data.materials, bpy.data.cameras, bpy.data.lights):
+    for datablocks in (
+        bpy.data.meshes,
+        bpy.data.curves,
+        bpy.data.materials,
+        bpy.data.cameras,
+        bpy.data.lights,
+    ):
         for block in list(datablocks):
             if block.users == 0:
                 datablocks.remove(block)
@@ -39,7 +78,7 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def make_principled(name: str, color: tuple[float, float, float, float], roughness: float, metallic: float = 0.0):
+def make_principled(name: str, color, roughness: float, metallic: float = 0.0):
     mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -85,7 +124,13 @@ def add_box(name: str, location, scale, material=None, bevel=0.0):
 
 
 def add_cylinder(name: str, location, radius, depth, material=None, rotation=(0, 0, 0), vertices=16):
-    bpy.ops.mesh.primitive_cylinder_add(vertices=vertices, radius=radius, depth=depth, location=location, rotation=rotation)
+    bpy.ops.mesh.primitive_cylinder_add(
+        vertices=vertices,
+        radius=radius,
+        depth=depth,
+        location=location,
+        rotation=rotation,
+    )
     obj = bpy.context.object
     obj.name = name
     if material:
@@ -99,8 +144,12 @@ def wall_panel(rng: random.Random, index: int):
     add_box(f"WallPanel_{index}", (0, 0, 1.5), (3.0, 0.18, 3.0), plaster)
     add_box(f"WallTrim_{index}", (0, -0.11, 0.55), (3.0, 0.08, 0.12), trim)
     if rng.random() < 0.75:
-        add_box(f"DamageStrip_{index}", (rng.uniform(-0.8, 0.8), -0.105, rng.uniform(1.0, 2.3)),
-                (rng.uniform(0.3, 1.1), 0.025, rng.uniform(0.03, 0.10)), trim)
+        add_box(
+            f"DamageStrip_{index}",
+            (rng.uniform(-0.8, 0.8), -0.105, rng.uniform(1.0, 2.3)),
+            (rng.uniform(0.3, 1.1), 0.025, rng.uniform(0.03, 0.10)),
+            trim,
+        )
 
 
 def door(rng: random.Random, index: int):
@@ -165,8 +214,7 @@ def utility_table(rng: random.Random, index: int):
 
 
 def save_asset(asset_name: str) -> None:
-    path = MESH_DIR / f"{asset_name}.blend"
-    bpy.ops.wm.save_as_mainfile(filepath=str(path))
+    bpy.ops.wm.save_as_mainfile(filepath=str(MESH_DIR / f"{asset_name}.blend"))
 
 
 def main() -> None:
@@ -194,7 +242,7 @@ def main() -> None:
         manifest.append(asset_name)
 
     clear_scene()
-    for i, (asset_name, generator) in enumerate(generators):
+    for i, (_, generator) in enumerate(generators):
         generator(rng, i)
         for obj in bpy.context.scene.objects:
             if obj.type == "MESH":
@@ -202,8 +250,10 @@ def main() -> None:
                 obj.location.y += (i // 4) * 3.0
     bpy.ops.wm.save_as_mainfile(filepath=str(OUTPUT / "Hollowlight_AssetFactory_Demo.blend"))
 
-    (MANIFEST_DIR / "asset_factory_manifest.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
-    print(f"Hollowlight asset factory complete. Seed: {seed}")
+    (MANIFEST_DIR / "asset_factory_manifest.txt").write_text(
+        "\n".join(manifest) + "\n", encoding="utf-8"
+    )
+    print(f"Hollowlight asset factory complete. Root: {ROOT}. Seed: {seed}")
 
 
 if __name__ == "__main__":
